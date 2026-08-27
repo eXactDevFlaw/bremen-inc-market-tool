@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<title>BREMEN INC. // MARKET UPLINK</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="starfield" aria-hidden="true"></div>
+<div class="scanlines" aria-hidden="true"></div>
+
+<header>
+  <div class="brand">
+    <span class="brand-mark">◈</span>
+    <div>
+      <h1>BREMEN INC.</h1>
+      <p class="brand-sub">MARKET UPLINK &mdash; NEW EDEN TRADE INTELLIGENCE</p>
+    </div>
+  </div>
+  <div class="header-controls">
+    <div class="select-wrap">
+      <select id="characterSelect"></select>
+    </div>
+    <a href="/auth/login" class="btn btn-primary">+ CHARAKTER VERBINDEN</a>
+  </div>
+</header>
+
+<main>
+  <nav class="tabs">
+    <button data-tab="skills" class="tab active"><span class="tab-index">01</span> SKILLS</button>
+    <button data-tab="assets" class="tab"><span class="tab-index">02</span> ASSETS</button>
+    <button data-tab="trading" class="tab"><span class="tab-index">03</span> TRADE ANALYSIS</button>
+    <button data-tab="settings" class="tab"><span class="tab-index">04</span> SETTINGS</button>
+  </nav>
+
+  <div id="setupBanner" class="setup-banner hidden">
+    ⚠ Keine EVE Client-ID konfiguriert &mdash; Login funktioniert erst, nachdem du unter
+    <button class="link-btn" data-goto="settings">SETTINGS</button> eine Client-ID hinterlegt hast.
+  </div>
+
+  <section id="tab-skills" class="panel">
+    <div class="panel-corner tl"></div><div class="panel-corner tr"></div>
+    <div class="panel-corner bl"></div><div class="panel-corner br"></div>
+    <h2>PILOT SKILL MATRIX</h2>
+    <div id="skillsContent" class="empty">// Waehle oben einen Charakter aus</div>
+  </section>
+
+  <section id="tab-assets" class="panel hidden">
+    <div class="panel-corner tl"></div><div class="panel-corner tr"></div>
+    <div class="panel-corner bl"></div><div class="panel-corner br"></div>
+    <h2>ASSET REGISTRY</h2>
+    <div id="assetsContent" class="empty">// Waehle oben einen Charakter aus</div>
+  </section>
+
+  <section id="tab-trading" class="panel hidden">
+    <div class="panel-corner tl"></div><div class="panel-corner tr"></div>
+    <div class="panel-corner bl"></div><div class="panel-corner br"></div>
+    <h2>AI TRADE ANALYSIS</h2>
+    <p class="panel-desc">
+      Live-Scan echter ESI-Marktdaten (Station-Trading + Hauling zwischen den 5 grossen Hubs).
+      Claude bewertet Liquiditaet, Wettbewerb und Risiko. Laufzeit ca. 30-90 Sekunden.
+    </p>
+    <button id="runAnalysis" class="btn btn-primary">▶ ANALYSE STARTEN</button>
+    <div id="tradingContent"></div>
+  </section>
+
+  <section id="tab-settings" class="panel hidden">
+    <div class="panel-corner tl"></div><div class="panel-corner tr"></div>
+    <div class="panel-corner bl"></div><div class="panel-corner br"></div>
+    <h2>SYSTEM CONFIGURATION</h2>
+
+    <h3 class="section-label">ANTHROPIC API KEY</h3>
+    <p class="panel-desc">
+      Wird ausschliesslich lokal in deiner Datenbank gespeichert, verlaesst diesen Rechner nur
+      fuer Anfragen an api.anthropic.com. Noetig fuer den Tab "Trade Analysis".
+      Kostenlos erhaeltlich unter console.anthropic.com.
+    </p>
+    <div class="settings-row">
+      <input id="anthropicKeyInput" type="password" placeholder="sk-ant-..." autocomplete="off" />
+      <span id="anthropicKeyStatus" class="status-tag"></span>
+    </div>
+
+    <h3 class="section-label">EVE CLIENT ID (OPTIONAL)</h3>
+    <p class="panel-desc">
+      Standardmaessig wird die eingebaute Bremen-Inc.-App verwendet. Nur ausfuellen, wenn du eine
+      eigene EVE Developer Application (developers.eveonline.com) nutzen willst.
+    </p>
+    <div class="settings-row">
+      <input id="eveClientIdInput" type="text" placeholder="eigene Client-ID (optional)" autocomplete="off" />
+      <span id="eveClientIdStatus" class="status-tag"></span>
+    </div>
+
+    <button id="saveSettings" class="btn btn-primary" style="margin-top:1.2rem;">SPEICHERN</button>
+    <span id="settingsSaveResult" class="muted" style="margin-left:0.8rem;"></span>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

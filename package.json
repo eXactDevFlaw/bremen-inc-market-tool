@@ -1,0 +1,33 @@
+{
+  "name": "bremen-inc-market-tool",
+  "version": "0.1.0",
+  "description": "Lokales EVE Online Tool: Charakter-Skills/Assets abfragen und lukrative Handelsmoeglichkeiten per Marktdaten + Claude AI berechnen.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "build:binary": "node scripts/build-binary.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.121.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "open": "^10.1.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.7.4",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}
