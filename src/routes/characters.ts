@@ -1,23 +1,40 @@
 import { Router } from "express";
-import { listCharacters } from "../db/index.js";
+import { getCharacter, listCharacters } from "../db/index.js";
 import { getCharacterSkillQueue, getCharacterSkills, getCharacterWalletBalance } from "../esi/character.js";
 import { getCharacterAssetsWithNames } from "../esi/assets.js";
+import { resolveAssetLocations } from "../esi/locations.js";
 import { resolveNames } from "../esi/universe.js";
 import { EsiError } from "../esi/client.js";
-import { computeOrderSlotAnalysis } from "../trading/orderSlots.js";
+import { buildFocusedSkillPlan, buildTradingSkillProfile, type ProfitFocus } from "../trading/skillAdvisor.js";
+import { getAllTypePrices } from "../trading/marketData.js";
+import { ESI_SCOPES } from "../config.js";
+import { parseLang } from "../i18n.js";
 
 export const charactersRouter = Router();
+
+const CURRENT_SCOPES = ESI_SCOPES.join(" ");
+
+const VALID_FOCI: ProfitFocus[] = ["trading", "hauling", "production"];
+function parseFocus(raw: unknown): ProfitFocus | null {
+  return typeof raw === "string" && (VALID_FOCI as string[]).includes(raw) ? (raw as ProfitFocus) : null;
+}
 
 charactersRouter.get("/", (_req, res) => {
   const characters = listCharacters().map((c) => ({
     characterId: c.character_id,
     characterName: c.character_name,
+    corporationName: c.corporation_name,
+    // false = Charakter wurde vor einer Scope-Erweiterung verbunden (z.B. Corp-/Struktur-Zugriff)
+    // - manche neueren Funktionen greifen dann erst nach erneutem "+ CHARAKTER VERBINDEN".
+    scopesUpToDate: c.scopes === CURRENT_SCOPES,
   }));
   res.json(characters);
 });
 
 charactersRouter.get("/:id/skills", async (req, res) => {
   const characterId = Number(req.params.id);
+  const lang = parseLang(req.query.lang);
+  const focus = parseFocus(req.query.focus);
   try {
     const [skills, queue] = await Promise.all([
       getCharacterSkills(characterId),
@@ -31,14 +48,17 @@ charactersRouter.get("/:id/skills", async (req, res) => {
     }));
 
     const levelByName = new Map(namedSkills.map((s) => [s.name, s.active_skill_level]));
-    const orderSlots = computeOrderSlotAnalysis(levelByName);
+    const character = getCharacter(characterId);
+    const tradingSkills = buildTradingSkillProfile(levelByName, character?.race_id ?? null, lang);
+    const focusedPlan = focus ? buildFocusedSkillPlan(levelByName, focus, lang, character?.race_id ?? null) : null;
 
     res.json({
       totalSp: skills.total_sp,
       unallocatedSp: skills.unallocated_sp ?? 0,
       skills: namedSkills.sort((a, b) => b.skillpoints_in_skill - a.skillpoints_in_skill),
       queue,
-      orderSlots,
+      tradingSkills,
+      focusedPlan,
     });
   } catch (err) {
     handleEsiError(err, res);
@@ -48,8 +68,33 @@ charactersRouter.get("/:id/skills", async (req, res) => {
 charactersRouter.get("/:id/assets", async (req, res) => {
   const characterId = Number(req.params.id);
   try {
-    const assets = await getCharacterAssetsWithNames(characterId);
-    res.json(assets);
+    const character = getCharacter(characterId);
+    const [assets, prices] = await Promise.all([
+      getCharacterAssetsWithNames(characterId),
+      getAllTypePrices().catch(() => new Map<number, number>()),
+    ]);
+    const locations = await resolveAssetLocations(characterId, assets, character?.scopes ?? "");
+    const withLocations = assets.map((a) => {
+      // ESI-Konvention: quantity -1 = Blueprint-Original, -2 = Blueprint-Kopie
+      // (kein Stack-Count). Fuer die Wertschaetzung als 1 Stueck behandeln,
+      // sonst wuerde die Multiplikation einen negativen "Wert" ergeben.
+      const effectiveQuantity = a.quantity < 0 ? 1 : a.quantity;
+      const unitPrice = prices.get(a.type_id) ?? null;
+      return {
+        ...a,
+        ...(locations.get(a.item_id) ?? {
+          locationKind: "unknown" as const,
+          systemId: null,
+          systemName: null,
+          placeName: "Unbekannter Ort",
+          regionId: null,
+          regionName: null,
+        }),
+        unitPrice,
+        totalValue: unitPrice !== null ? unitPrice * effectiveQuantity : null,
+      };
+    });
+    res.json(withLocations);
   } catch (err) {
     handleEsiError(err, res);
   }

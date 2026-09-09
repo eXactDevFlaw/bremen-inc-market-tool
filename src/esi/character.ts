@@ -1,4 +1,5 @@
-import { esiGetAuthed } from "./client.js";
+import { esiGetAuthed, esiGetPublic } from "./client.js";
+import { resolveNames } from "./universe.js";
 
 export interface SkillEntry {
   skill_id: number;
@@ -24,6 +25,29 @@ export interface SkillQueueEntry {
   training_start_sp?: number;
 }
 
+export interface CharacterPublicInfo {
+  name: string;
+  corporation_id: number;
+  alliance_id?: number;
+  race_id: number;
+  birthday: string;
+}
+
+export interface CharacterMarketOrder {
+  order_id: number;
+  type_id: number;
+  region_id: number;
+  location_id: number;
+  is_buy_order: boolean;
+  price: number;
+  volume_remain: number;
+  volume_total: number;
+  issued: string;
+  duration: number;
+  range: string;
+  escrow?: number;
+}
+
 export function getCharacterSkills(characterId: number): Promise<CharacterSkills> {
   return esiGetAuthed<CharacterSkills>(characterId, `/characters/${characterId}/skills/`);
 }
@@ -34,4 +58,25 @@ export function getCharacterSkillQueue(characterId: number): Promise<SkillQueueE
 
 export function getCharacterWalletBalance(characterId: number): Promise<number> {
   return esiGetAuthed<number>(characterId, `/characters/${characterId}/wallet/`);
+}
+
+/** Oeffentliche Grunddaten (kein Auth noetig) - u.a. Corp-Zugehoerigkeit und Rasse. */
+export function getCharacterPublicInfo(characterId: number): Promise<CharacterPublicInfo> {
+  return esiGetPublic<CharacterPublicInfo>(`/characters/${characterId}/`);
+}
+
+export function getCharacterMarketOrders(characterId: number): Promise<CharacterMarketOrder[]> {
+  return esiGetAuthed<CharacterMarketOrder[]>(characterId, `/characters/${characterId}/orders/`);
+}
+
+/** Skill-Level nach Skill-Name - Basis fuer Gebuehren-/Order-Slot-Berechnungen. */
+export async function getSkillLevelsByName(characterId: number): Promise<Map<string, number>> {
+  const skills = await getCharacterSkills(characterId);
+  const names = await resolveNames(skills.skills.map((s) => s.skill_id));
+  const map = new Map<string, number>();
+  for (const s of skills.skills) {
+    const name = names.get(s.skill_id);
+    if (name) map.set(name, s.active_skill_level);
+  }
+  return map;
 }

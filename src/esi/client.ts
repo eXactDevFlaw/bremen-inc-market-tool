@@ -94,3 +94,32 @@ export async function esiGetAllPagesPublic<T>(pathname: string): Promise<T[]> {
   }
   return results;
 }
+
+/**
+ * Wie esiGetAllPagesPublic, laedt die Folgeseiten aber mit begrenzter
+ * Parallelitaet statt strikt sequenziell. Noetig fuer sehr grosse oeffentliche
+ * Endpunkte wie den kompletten Orderbuch-Dump einer Region (Jita/The Forge
+ * hat je nach Marktaktivitaet mehrere hundert Seiten) - sequenziell waere das
+ * viel zu langsam. Seite 1 wird zuerst geladen (liefert ueber den
+ * X-Pages-Header die Gesamtzahl), danach holt ein kleiner Worker-Pool die
+ * restlichen Seiten parallel.
+ */
+export async function esiGetAllPagesPublicConcurrent<T>(pathname: string, concurrency = 15): Promise<T[]> {
+  const separator = pathname.includes("?") ? "&" : "?";
+  const first = await request<T[]>(`${pathname}${separator}page=1`);
+  if (first.pages <= 1) return first.data;
+
+  const pageNumbers = Array.from({ length: first.pages - 1 }, (_, i) => i + 2);
+  const pageResults: T[][] = new Array(pageNumbers.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < pageNumbers.length) {
+      const idx = cursor++;
+      const page = pageNumbers[idx] as number;
+      const next = await request<T[]>(`${pathname}${separator}page=${page}`);
+      pageResults[idx] = next.data;
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, pageNumbers.length) }, worker));
+  return [first.data, ...pageResults].flat();
+}

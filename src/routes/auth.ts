@@ -7,8 +7,10 @@ import {
   generateState,
   MissingEveClientIdError,
 } from "../auth/eveSso.js";
-import { consumeOauthState, deleteCharacter, saveOauthState, upsertCharacter } from "../db/index.js";
+import { consumeOauthState, deleteCharacter, saveOauthState, updateCharacterProfile, upsertCharacter } from "../db/index.js";
 import { ESI_SCOPES } from "../config.js";
+import { getCharacterPublicInfo } from "../esi/character.js";
+import { resolveName } from "../esi/universe.js";
 
 export const authRouter = Router();
 
@@ -52,6 +54,21 @@ authRouter.get("/callback", async (req, res) => {
       token_expires_at: Date.now() + tokens.expires_in * 1000,
       scopes: ESI_SCOPES.join(" "),
     });
+
+    // Corp-/Rassen-Zuordnung nachladen - rein informativ, darf den Login
+    // nicht zum Scheitern bringen, falls ESI hier kurz haakt.
+    try {
+      const publicInfo = await getCharacterPublicInfo(identity.characterId);
+      const corporationName = await resolveName(publicInfo.corporation_id);
+      updateCharacterProfile(identity.characterId, {
+        corporationId: publicInfo.corporation_id,
+        corporationName,
+        raceId: publicInfo.race_id,
+      });
+    } catch {
+      // Ignorieren - Charakter bleibt trotzdem nutzbar, nur ohne Corp-/Rassen-Info.
+    }
+
     res.redirect("/?connected=" + encodeURIComponent(identity.characterName));
   } catch (err) {
     res.status(500).send(`Login fehlgeschlagen: ${(err as Error).message}`);

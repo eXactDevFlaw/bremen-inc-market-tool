@@ -37,6 +37,21 @@ db.exec(`
   );
 `);
 
+// Leichte Migration fuer bestehende Installationen: neue Spalten fuer
+// Corp-/Rassen-Zuordnung (fuer Corp-Integration und passende
+// Freighter-Skill-Empfehlung). SQLite kennt kein "ADD COLUMN IF NOT EXISTS",
+// daher pruefen wir pragma table_info und fuegen fehlende Spalten gezielt hinzu.
+function ensureColumn(table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!columns.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+ensureColumn("characters", "corporation_id", "INTEGER");
+ensureColumn("characters", "race_id", "INTEGER");
+ensureColumn("characters", "corporation_name", "TEXT");
+
 export function getSetting(key: string): string | undefined {
   const row = db.prepare(`SELECT value FROM settings WHERE key = ?`).get(key) as
     | { value: string }
@@ -63,9 +78,12 @@ export interface CharacterRow {
   token_expires_at: number;
   scopes: string;
   created_at: number;
+  corporation_id: number | null;
+  corporation_name: string | null;
+  race_id: number | null;
 }
 
-export function upsertCharacter(row: Omit<CharacterRow, "created_at">): void {
+export function upsertCharacter(row: Omit<CharacterRow, "created_at" | "corporation_id" | "corporation_name" | "race_id">): void {
   db.prepare(
     `INSERT INTO characters (character_id, character_name, access_token, refresh_token, token_expires_at, scopes)
      VALUES ($character_id, $character_name, $access_token, $refresh_token, $token_expires_at, $scopes)
@@ -76,6 +94,21 @@ export function upsertCharacter(row: Omit<CharacterRow, "created_at">): void {
        token_expires_at = excluded.token_expires_at,
        scopes = excluded.scopes`,
   ).run(row);
+}
+
+/** Aktualisiert Corp-/Rassen-Zuordnung, ohne die OAuth-Tokens anzufassen. */
+export function updateCharacterProfile(
+  characterId: number,
+  profile: { corporationId: number | null; corporationName: string | null; raceId: number | null },
+): void {
+  db.prepare(
+    `UPDATE characters SET corporation_id = $corporation_id, corporation_name = $corporation_name, race_id = $race_id WHERE character_id = $character_id`,
+  ).run({
+    character_id: characterId,
+    corporation_id: profile.corporationId,
+    corporation_name: profile.corporationName,
+    race_id: profile.raceId,
+  });
 }
 
 export function getCharacter(characterId: number): CharacterRow | undefined {

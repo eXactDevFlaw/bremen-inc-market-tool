@@ -7,3 +7,7 @@ data/*.sqlite-journal
 data/*.sqlite-wal
 data/*.sqlite-shm
 .directory
+
+# Abgelegte Datei-Outputs aus Claude-Sessions (z.B. eine env-Kopie mit lokaler
+# EVE_CLIENT_ID) - nicht Teil des Projekts, nie committen.
+Claude outputs/
