@@ -34,6 +34,13 @@ export function deriveVolumeSignal(recentAverageVolume: number | null): Provenan
 
 // "configured" Schwellenwerte fuer computeConfidence() - siehe Dateikopf.
 const CONFIDENCE_UNKNOWN_VOLUME_SCORE = 0.2;
+// DECISIONS.md D019: gleiche Groesse/gleiches Prinzip wie
+// CONFIDENCE_UNKNOWN_VOLUME_SCORE, fuer den Fall, dass competingOrders
+// `null` ist (Hauling-Ausfuehrungsmodell ohne eigene Sell-Order am
+// Verkaufsort, siehe trading/analyzer.ts#HaulTradeCandidate.sellHubSellOrderCount) -
+// bewusst NICHT 0 (das wuerde "unbekannt" als "bestaetigt keine
+// konkurrierenden Orders" missverstehen, D003/D011).
+const CONFIDENCE_UNKNOWN_ORDERS_SCORE = 0.2;
 const CONFIDENCE_VOLUME_CEILING = 50; // Tagesvolumen, ab dem der Liquiditaets-Anteil der Confidence als "voll" gilt.
 const CONFIDENCE_ORDER_CEILING = 10; // konkurrierende Orders, ab denen der Order-Anteil als "voll" gilt.
 const CONFIDENCE_MAX_FRESHNESS_AGE_SECONDS = 60 * 60; // Daten, die aelter als das sind, tragen 0 zum Frische-Anteil bei.
@@ -42,7 +49,11 @@ const CONFIDENCE_WEIGHTS = { volume: 0.5, orders: 0.3, freshness: 0.2 } as const
 
 export interface ConfidenceInput {
   volume: Provenanced<number>;
-  competingOrders: number;
+  /**
+   * `null` = fuer dieses Ausfuehrungsmodell nicht ermittelbar/nicht
+   * anwendbar (siehe DECISIONS.md D019), NICHT "0 konkurrierende Orders".
+   */
+  competingOrders: number | null;
   ageSeconds: number;
 }
 
@@ -60,7 +71,11 @@ export function computeConfidence(input: ConfidenceInput): number {
       ? CONFIDENCE_UNKNOWN_VOLUME_SCORE
       : Math.min(1, Math.log10((input.volume.value ?? 0) + 2) / Math.log10(CONFIDENCE_VOLUME_CEILING + 2));
 
-  const orderScore = Math.min(1, input.competingOrders / CONFIDENCE_ORDER_CEILING);
+  // DECISIONS.md D019: `null` (nicht ermittelbar/nicht anwendbar) bekommt
+  // denselben neutralen Baseline-Score wie unbekanntes Volumen, statt in
+  // die Division zu geraten (die 0 ergeben wuerde - "bestaetigt keine
+  // Konkurrenz", nicht "unbekannt").
+  const orderScore = input.competingOrders === null ? CONFIDENCE_UNKNOWN_ORDERS_SCORE : Math.min(1, input.competingOrders / CONFIDENCE_ORDER_CEILING);
   const freshnessScore = Math.max(0, 1 - input.ageSeconds / CONFIDENCE_MAX_FRESHNESS_AGE_SECONDS);
 
   const combined = volumeScore * CONFIDENCE_WEIGHTS.volume + orderScore * CONFIDENCE_WEIGHTS.orders + freshnessScore * CONFIDENCE_WEIGHTS.freshness;

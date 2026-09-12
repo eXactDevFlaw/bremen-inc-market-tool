@@ -9,9 +9,22 @@
 // D016 (Schritt 4 von Phase 2: vollstaendige, verifizierte Dokumentation der
 // Score-Formel, der Risk-Schwellenwerte inkl. Reihenfolge, des aktuellen
 // (unvollstaendigen) Liquidity/Confidence/Risk-Trennungsstands und der
-// bekannten Luecken wie dem Hauling-`competingOrders`-Platzhalter und dem
-// bisher ungenutzten `executableQuantity`). Dieser Schritt aendert an der
-// Formel/den Schwellenwerten unten NICHTS - D016 ist reine Dokumentation.
+// damals bekannten Luecken wie dem Hauling-`competingOrders`-Platzhalter und
+// dem bisher ungenutzten `executableQuantity`). D016 hat an der Formel/den
+// Schwellenwerten unten NICHTS geaendert - reine Dokumentation.
+//
+// D019 (Schritt 6 von Phase 2, KORRIGIERTE Fassung): der in D016 dokumentierte
+// Hauling-`competingOrders`-Platzhalter ist ersetzt - siehe scoreHaul() unten
+// und DECISIONS.md D019 fuer die volle Begruendung. Ein erster Versuch (D018)
+// hatte den Platzhalter durch `Math.min(buyHubSellOrderCount,
+// sellHubBuyOrderCount)` ersetzt - selbst eine synthetische Aggregation
+// zweier nicht zusammengehoeriger Orderbuch-Seiten (Sell-Orders an einem Hub,
+// Buy-Orders an einem anderen) und wurde verworfen. D019 nutzt stattdessen
+// die reale Sell-Order-Zahl am Verkaufsort (die tatsaechliche Konkurrenz fuer
+// die dort noch zu platzierende eigene Sell-Order) und `null`, wenn das
+// jeweilige Ausfuehrungsmodell dort gar keine eigene Order platziert.
+// `executableQuantity` bleibt weiterhin ungenutzt (siehe D016) - das ist
+// NICHT Teil von Schritt 6.
 import type { HaulTradeCandidate, StationTradeCandidate, TradeCandidate } from "./analyzer.js";
 import { NO_SKILLS, upwellStructureFeeAssumption, type TradeFeeSkills } from "../economics/fees.js";
 import { computeStationTradeProfit, computeHaulProfit, type ProfitCostBreakdown } from "../economics/profit.js";
@@ -59,7 +72,14 @@ interface ScoredBase {
   avgDailyVolume: number;
   /** false = avgDailyVolume ist mangels Handelshistorie auf 0 ausgewichen, nicht tatsaechlich beobachtet (DECISIONS.md D013). */
   avgDailyVolumeKnown: boolean;
-  competingOrders: number;
+  /**
+   * `null` = fuer dieses Ausfuehrungsmodell nicht ermittelbar/nicht
+   * anwendbar (Hauling ueber ein Ausfuehrungsmodell ohne eigene Sell-Order
+   * am Verkaufsort, siehe DECISIONS.md D019) - NICHT "0 konkurrierende
+   * Orders" (D003/D011, "unknown != zero"). Bei Station Trading immer ein
+   * echter Wert (siehe scoreStation).
+   */
+  competingOrders: number | null;
   riskLevel: RiskLevel;
   riskReason: string;
   confidence: number;
@@ -83,19 +103,30 @@ interface ScoredBase {
 export type ScoredCandidate = ScoredBase;
 
 /**
- * Bewertet riskLevel/riskReason ueber fuenf Bedingungen, die IN REIHENFOLGE
+ * Bewertet riskLevel/riskReason ueber sechs Bedingungen, die IN REIHENFOLGE
  * geprueft werden - die erste zutreffende gewinnt (kein unabhaengiges
  * Scoring der einzelnen Faktoren). Die Reihenfolge ist absichtlich so
  * gewaehlt und darf bei einer Aenderung dieser Funktion nicht vertauscht
- * werden - siehe Punkt 2 unten, warum.
+ * werden - siehe Punkt 3 unten, warum.
  *
  * Alle Schwellenwerte (2, 1, 3, 15, 5) sind "configured" Heuristiken (siehe
  * docs/economic-model.md "Value provenance") - gewaehlt, nicht aus
  * verifizierter EVE-Mechanik oder Marktdaten hergeleitet (D011). Diese
- * Funktion aendert dadurch nichts an der Berechnung selbst - sie ist hier
- * nur vollstaendig dokumentiert (DECISIONS.md D016, Schritt 4 von Phase 2):
+ * Funktion aendert dadurch nichts an der urspruenglichen Berechnung/den
+ * urspruenglichen fuenf Bedingungen (DECISIONS.md D016, Schritt 4 von
+ * Phase 2) - Schritt 6/D019 ergaenzt lediglich EINE neue, vorgeschaltete
+ * Bedingung (Punkt 0), die zwingend noetig ist, seit `competingOrders`
+ * `null` sein kann (siehe unten):
  *
- * 1. `competingOrders < 2` -> high (zu wenige konkurrierende Orders)
+ * 0. `competingOrders === null` -> medium ("nicht ermittelbar/nicht
+ *    anwendbar", NICHT "bestaetigt niedrig") - MUSS vor Punkt 1 laufen, da
+ *    `null < 2` sonst entweder ein Typfehler waere oder (ohne strikte Typen)
+ *    stillschweigend als `0 < 2` durchgehen und faelschlich "high" ergeben
+ *    wuerde. Kein neuer Schwellenwert, keine neue Risikostufe - derselbe
+ *    "unbekannt/nicht anwendbar -> medium"-Grundsatz wie Punkt 2 unten, nur
+ *    fuer `competingOrders` statt `avgDailyVolume` (DECISIONS.md D019).
+ * 1. `competingOrders < 2` -> high (zu wenige konkurrierende Orders) -
+ *    ab hier ist `competingOrders` durch Punkt 0 als `number` garantiert.
  * 2. `!avgDailyVolumeKnown` -> medium ("unbekannt", NICHT "bestaetigt niedrig") -
  *    laeuft bewusst VOR Punkt 3, damit ein unbekanntes Volumen (Platzhalter 0,
  *    siehe die Doku auf ScoredBase.avgDailyVolumeKnown oben) niemals als
@@ -106,24 +137,45 @@ export type ScoredCandidate = ScoredBase;
  * 5. `avgDailyVolume < 15 || competingOrders < 5` -> medium (maessige Liquiditaet)
  * 6. sonst -> low
  *
- * Herkunft der Eingaben (siehe DECISIONS.md D016 fuer Details):
+ * Herkunft der Eingaben (siehe DECISIONS.md D016/D019 fuer Details):
  * `avgDailyVolume`/`avgDailyVolumeKnown` sind echte, aus der ESI-Handels-
- * historie abgeleitete Werte. `competingOrders` ist bei Station Trading ein
- * echter, beobachteter Order-Count (`Math.min(sellOrderCount, buyOrderCount)`,
- * siehe scoreStation) - bei Hauling dagegen aktuell ein SYNTHETISCHER
- * PLATZHALTER (siehe scoreHaul: `avgDailyVolumeKnown && avgDailyVolume >= 1 ? 5 : 0`),
- * kein echter Order-Count. Das ist genau der in der Phase-2-Planung fuer
- * Schritt 6 vorgesehene Punkt ("echte competingOrders fuer Hauling") - hier
- * (Schritt 4) nur dokumentiert, nicht veraendert. `executableQuantity`
- * (Schritt 2) fliesst aktuell NICHT in diese Funktion ein.
+ * historie abgeleitete Werte. `competingOrders` ist bei Station Trading
+ * immer ein echter, beobachteter Order-Count (`Math.min(sellOrderCount,
+ * buyOrderCount)` am SELBEN Hub, siehe scoreStation - beide Zahlen gehoeren
+ * zusammen, weil Station Trading dort tatsaechlich zwei eigene Orders
+ * (Buy+Sell) platziert). Bei Hauling ist es seit Schritt 6/D019 die reale
+ * Sell-Order-Zahl am Verkaufsort (`sellHubSellOrderCount`, siehe scoreHaul) -
+ * oder `null`, wenn das konkrete Ausfuehrungsmodell dort gar keine eigene
+ * Sell-Order platziert (z.B. `findRouteCandidates()`s Instant-Sell-Modell).
+ * Ein erster Versuch (D018) hatte hierfuer `Math.min(buyHubSellOrderCount,
+ * sellHubBuyOrderCount)` verwendet - Sell-Orders an EINEM Hub mit Buy-Orders
+ * an einem ANDEREN Hub kombiniert, obwohl diese beiden Zahlen nichts
+ * miteinander zu tun haben - und wurde als semantisch falsch verworfen.
+ * `executableQuantity` (Schritt 2) fliesst weiterhin NICHT in diese Funktion
+ * ein (D016, nicht Teil von Schritt 6).
  */
 function assessRisk(
   avgDailyVolume: number,
   avgDailyVolumeKnown: boolean,
-  competingOrders: number,
+  competingOrders: number | null,
   netMarginPct: number,
   lang: Lang,
 ): { level: RiskLevel; reason: string } {
+  if (competingOrders === null) {
+    // DECISIONS.md D019: nicht ermittelbar/nicht anwendbar fuer dieses
+    // Ausfuehrungsmodell - wie Punkt 2 unten (`!avgDailyVolumeKnown`) bewusst
+    // "medium", nicht "high" und nicht "low": wir wissen es schlicht nicht,
+    // das ist weder eine bestaetigt duenne noch eine bestaetigt tiefe
+    // Order-Lage.
+    return {
+      level: "medium",
+      reason: pick(
+        lang,
+        `Competing-order depth at the destination is unknown for this execution model (no resting sell order is placed there) - treat it as unverified, not confirmed thin. Start with smaller quantities.`,
+        `Die Tiefe konkurrierender Orders am Zielort ist fuer dieses Ausfuehrungsmodell nicht ermittelbar (dort wird keine eigene Sell-Order platziert) - als unverifiziert behandeln, nicht als bestaetigt duenn. Vorsichtshalber mit kleineren Stueckzahlen beginnen.`,
+      ),
+    };
+  }
   if (competingOrders < 2) {
     return {
       level: "high",
@@ -282,7 +334,20 @@ function scoreHaul(c: HaulTradeCandidate, skills: TradeFeeSkills, lang: Lang): S
 
   const capitalRequired = c.buyPrice;
   const roiPct = computeRoiPct(net.netProfit, capitalRequired);
-  const competingOrders = c.avgDailyVolumeKnown && c.avgDailyVolume >= 1 ? 5 : 0;
+  // Schritt 6 von Phase 2, KORRIGIERTE Fassung (DECISIONS.md D019): direkte
+  // 1:1-Uebernahme der realen Sell-Order-Zahl am Verkaufsort - genau die
+  // Orders, die mit der eigenen, dort noch zu platzierenden Sell-Order um
+  // dieselben Kaeufer konkurrieren (siehe die Reasoning-Vorlage unten:
+  // "sell via your own sell order"). KEINE Aggregation mit irgendetwas vom
+  // Einkaufsort (dort wird per Instant-Buy gekauft, keine eigene Order
+  // platziert - es gibt dort nichts, das mit UNS konkurrieren koennte). Ein
+  // erster Versuch (D018) hatte stattdessen `Math.min(buyHubSellOrderCount,
+  // sellHubBuyOrderCount)` gebildet - zwei nicht zusammengehoerige
+  // Orderbuch-Seiten an zwei verschiedenen Hubs - und wurde verworfen.
+  // `null`, wenn dieser Kandidat aus einem Ausfuehrungsmodell stammt, das am
+  // Verkaufsort gar keine eigene Sell-Order platziert (siehe
+  // HaulTradeCandidate.sellHubSellOrderCount) - bewusst nicht geraten.
+  const competingOrders = c.sellHubSellOrderCount;
   const risk = assessRisk(c.avgDailyVolume, c.avgDailyVolumeKnown, competingOrders, net.netMarginPct, lang);
   const rawScore = net.netMarginPct * Math.log10(c.avgDailyVolume + 2);
   const ageSeconds = c.dataAgeSeconds ?? 0;

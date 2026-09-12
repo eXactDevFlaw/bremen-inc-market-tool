@@ -100,6 +100,31 @@ export interface HaulTradeCandidate {
    * `buyPrice` bereits unbestimmt) - nie geraten.
    */
   executableQuantity: number | null;
+  /**
+   * Schritt 6 von Phase 2 - KORRIGIERT in D019 (DECISIONS.md), nachdem die
+   * urspruengliche D018-Fassung (`Math.min(buyHubSellOrderCount,
+   * sellHubBuyOrderCount)`) als selbst-synthetische Aggregation zweier
+   * NICHT zusammengehoeriger Orderbuch-Seiten (Sell-Orders an einem Hub,
+   * Buy-Orders an einem anderen Hub) verworfen wurde.
+   *
+   * Echte Anzahl der SELL-Orders am VERKAUFSORT (`sellHub`) - genau die
+   * Orders, die mit der EIGENEN, dort noch zu platzierenden Sell-Order um
+   * dieselben Kaeufer konkurrieren (siehe `sellPrice`-Kommentar oben: die
+   * hier modellierte Hauling-Strategie kauft per Instant-Buy am Einkaufsort
+   * - dort wird KEINE eigene Order platziert, also gibt es dort auch keine
+   * "konkurrierenden Orders" fuer uns - und stellt danach eine EIGENE
+   * Sell-Order am Verkaufsort, die auf eine Gegenpartei wartet, siehe oben).
+   *
+   * `null`, wenn das jeweilige Ausfuehrungsmodell ueberhaupt keine eigene
+   * Sell-Order am Verkaufsort platziert (siehe `findRouteCandidates()` /
+   * `quoteItemAtTwoLocations()`: dort wird stattdessen per Instant-Sell in
+   * eine bestehende Buy-Order verkauft - ein anderes Ausfuehrungsmodell, in
+   * dem "konkurrierende Orders" fuer eine eigene Sell-Order konzeptionell
+   * nicht existiert, nicht bloss unbekannt ist). Bewusst NICHT geraten,
+   * NICHT mit `buyHub`-Daten kombiniert, NICHT auf 0 ausgewichen (D003/D011,
+   * "unknown != zero", siehe DECISIONS.md D019).
+   */
+  sellHubSellOrderCount: number | null;
 }
 
 export type TradeCandidate = StationTradeCandidate | HaulTradeCandidate;
@@ -215,6 +240,9 @@ async function analyzeItem(itemName: string, typeId: number): Promise<TradeCandi
         avgDailyVolume: combinedVolume ?? 0,
         avgDailyVolumeKnown: combinedVolume !== null,
         executableQuantity: buyHubStat.bestSellExecutableQuantity,
+        // Real - sellHubStat.bestSell != null (Bedingung oben) impliziert
+        // sellOrders.length >= 1 an diesem Hub, siehe D019.
+        sellHubSellOrderCount: sellHubStat.sellOrderCount,
       });
     }
   }
@@ -295,6 +323,8 @@ interface RawHaulCandidate {
   rawScore: number;
   /** Siehe HaulTradeCandidate.executableQuantity - hier bereits aus HubTypeStats.bestSellExecutableQuantity des Einkaufsorts uebernommen. */
   executableQuantity: number | null;
+  /** Siehe HaulTradeCandidate.sellHubSellOrderCount (DECISIONS.md D019) - hier immer real (bestSell != null impliziert sellOrderCount >= 1 am Verkaufsort). */
+  sellHubSellOrderCount: number;
 }
 
 type RawCandidate = RawStationCandidate | RawHaulCandidate;
@@ -385,6 +415,7 @@ export async function findTradeCandidatesFullMarket(): Promise<TradeCandidate[]>
           profitPct,
           rawScore: profitPct * Math.log10(liquidityProxy + 2),
           executableQuantity: buyHubStat.s.bestSellExecutableQuantity,
+          sellHubSellOrderCount: sellHubStat.s.sellOrderCount,
         });
       }
     }
@@ -458,6 +489,7 @@ export async function findTradeCandidatesFullMarket(): Promise<TradeCandidate[]>
         avgDailyVolumeKnown: combinedVolume !== null,
         dataAgeSeconds,
         executableQuantity: c.executableQuantity,
+        sellHubSellOrderCount: c.sellHubSellOrderCount,
       });
     }
   }
@@ -544,7 +576,36 @@ export interface RouteItemQuote {
   typeId: number;
   buyPrice: number | null; // bester (niedrigster) Sell-Order-Preis am Einkaufsort - das zahlst du per Instant-Buy
   sellPrice: number | null; // bester (hoechster) Buy-Order-Preis am Verkaufsort - das bekommst du per Instant-Sell
+  /**
+   * Trotz des Namens: Anzahl der SELL-Orders am Einkaufsort (`from`)
+   * (`fromSellOrders.length`) - die Seite, gegen die per Instant-Buy
+   * gekauft wird. Nicht umbenannt, obwohl der Name irrefuehrend ist - dieses
+   * Feld wird unter genau diesem Namen bereits ueber `/api/trading/route`
+   * nach aussen als JSON-Antwortfeld exponiert (routes/trading.ts), eine
+   * Umbenennung waere eine oeffentliche API-Aenderung (siehe DECISIONS.md
+   * D010).
+   *
+   * NICHT die Quelle fuer `HaulTradeCandidate.sellHubSellOrderCount`
+   * (DECISIONS.md D019): dieses Feld beschreibt den EINKAUFSORT, nicht den
+   * Verkaufsort, und selbst am Verkaufsort waere die Sell-Order-Seite
+   * gemeint, nicht die Buy-Order-Seite (siehe `sellOrderCount` unten). Ein
+   * frueherer Versuch (D018), dieses Feld dennoch fuer den Hauling-
+   * `competingOrders`-Wert zu verwenden, wurde als semantisch falsch
+   * verworfen (Aggregation zweier nicht zusammengehoeriger Orderbuch-Seiten).
+   */
   buyOrderCount: number;
+  /**
+   * Siehe buyOrderCount - trotz des Namens die Anzahl der BUY-Orders am
+   * Verkaufsort (`to`) (`toBuyOrders.length`), NICHT der Sell-Orders dort.
+   * `quoteItemAtTwoLocations()` verkauft per Instant-Sell in eine
+   * bestehende Buy-Order (`sellPrice = Math.max(toBuyOrders)`) - es wird
+   * KEINE eigene Sell-Order am Verkaufsort platziert. Deshalb gibt es hier
+   * auch keine Sell-Order-Zahl am Verkaufsort zu erheben, und
+   * `HaulTradeCandidate.sellHubSellOrderCount` ist fuer aus dieser Funktion
+   * gebaute Kandidaten bewusst `null` (siehe findRouteCandidates() und
+   * DECISIONS.md D019) - nicht aus diesem Feld herleitbar, da es die
+   * falsche Orderbuch-Seite ist.
+   */
   sellOrderCount: number;
   avgDailyVolume: number;
   /** Siehe StationTradeCandidate.avgDailyVolumeKnown. */
@@ -637,6 +698,15 @@ export async function findRouteCandidates(
       avgDailyVolume: q.avgDailyVolume,
       avgDailyVolumeKnown: q.avgDailyVolumeKnown,
       executableQuantity: q.executableQuantity,
+      // DECISIONS.md D019: dieses Ausfuehrungsmodell verkauft per Instant-
+      // Sell in eine bestehende Buy-Order am Verkaufsort (siehe
+      // quoteItemAtTwoLocations()) statt eine eigene Sell-Order zu
+      // platzieren - es gibt daher keine eigene Order, die mit anderen
+      // Sell-Orders "konkurrieren" koennte. Bewusst `null`, nicht aus
+      // RouteItemQuote.sellOrderCount (Buy-Orders am Verkaufsort - falsche
+      // Orderbuch-Seite) oder .buyOrderCount (Einkaufsort - falscher Ort)
+      // geraten.
+      sellHubSellOrderCount: null,
     });
   }
   return candidates;
