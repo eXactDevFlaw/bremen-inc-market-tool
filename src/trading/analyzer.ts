@@ -322,6 +322,15 @@ const FULL_MARKET_HISTORY_CONCURRENCY = 10;
  *   4. Nur fuer diese engere Auswahl die Handelshistorie (Tagesvolumen) laden.
  *   5. Namen aufloesen und in die bestehenden TradeCandidate-Formen giessen,
  *      damit rankCandidatesLocally unveraendert weiterverwendet werden kann.
+ *
+ * WICHTIG (DECISIONS.md D016): der `rawScore`/`liquidityProxy` in Schritt 3
+ * unten ist eine reine Vorfilter-Heuristik dieser Funktion (Spread-%/Order-
+ * Count VOR Gebuehren und VOR echtem Handelsvolumen) - NICHT dasselbe wie
+ * das finale ScoredCandidate.score aus trading/scoring.ts (netMarginPct
+ * NACH Gebuehren * log10(echtes avgDailyVolume)). Beide nutzen zufaellig
+ * dieselbe log10(x+2)-Form, sind aber unabhaengige Werte mit unabhaengigen
+ * Zwecken (Vorauswahl vs. finales Ranking) - hier nur zur Klarstellung
+ * dokumentiert, keine Verhaltensaenderung.
  */
 export async function findTradeCandidatesFullMarket(): Promise<TradeCandidate[]> {
   const hubStats = await mapWithConcurrency(TRADE_HUBS, 5, async (hub) => {

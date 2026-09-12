@@ -5,7 +5,13 @@
 // Migriert auf die zentrale Economic Engine (ROADMAP.md Phase 1, siehe
 // src/economics/). Die frueheren netStationTradeProfit()/netHaulProfit() aus
 // trading/fees.ts sind entfernt - stattdessen economics/profit.ts direkt.
-// Siehe DECISIONS.md D013 (Margin/ROI-Fix), D014 (capitalRequired/Dauer).
+// Siehe DECISIONS.md D013 (Margin/ROI-Fix), D014 (capitalRequired/Dauer),
+// D016 (Schritt 4 von Phase 2: vollstaendige, verifizierte Dokumentation der
+// Score-Formel, der Risk-Schwellenwerte inkl. Reihenfolge, des aktuellen
+// (unvollstaendigen) Liquidity/Confidence/Risk-Trennungsstands und der
+// bekannten Luecken wie dem Hauling-`competingOrders`-Platzhalter und dem
+// bisher ungenutzten `executableQuantity`). Dieser Schritt aendert an der
+// Formel/den Schwellenwerten unten NICHTS - D016 ist reine Dokumentation.
 import type { HaulTradeCandidate, StationTradeCandidate, TradeCandidate } from "./analyzer.js";
 import { NO_SKILLS, upwellStructureFeeAssumption, type TradeFeeSkills } from "../economics/fees.js";
 import { computeStationTradeProfit, computeHaulProfit, type ProfitCostBreakdown } from "../economics/profit.js";
@@ -60,11 +66,57 @@ interface ScoredBase {
   dataFreshness: DataFreshness;
   reasoning: string;
   assumptions: string[];
+  /**
+   * Ranking-Heuristik, KEINE oekonomische Kennzahl:
+   * `score = netMarginPct * log10(avgDailyVolume + 2) / riskPenalty(riskLevel)`.
+   * `netMarginPct` kommt unveraendert aus der Economic Engine (economics/profit.ts);
+   * die log10-Skalierung von avgDailyVolume und der riskPenalty-Divisor
+   * (siehe riskPenalty() unten) sind dagegen "configured" Heuristiken, nicht
+   * aus EVE-Mechanik abgeleitet. Der Score ist dimensionslos, nicht mit ISK
+   * vergleichbar und darf in einer spaeteren Phase geaendert werden, OHNE
+   * dass sich dadurch etwas an netProfit/margin/ROI (Economic Engine) aendert
+   * - siehe DECISIONS.md D002/D016 fuer die vollstaendige Herleitung.
+   */
   score: number;
 }
 
 export type ScoredCandidate = ScoredBase;
 
+/**
+ * Bewertet riskLevel/riskReason ueber fuenf Bedingungen, die IN REIHENFOLGE
+ * geprueft werden - die erste zutreffende gewinnt (kein unabhaengiges
+ * Scoring der einzelnen Faktoren). Die Reihenfolge ist absichtlich so
+ * gewaehlt und darf bei einer Aenderung dieser Funktion nicht vertauscht
+ * werden - siehe Punkt 2 unten, warum.
+ *
+ * Alle Schwellenwerte (2, 1, 3, 15, 5) sind "configured" Heuristiken (siehe
+ * docs/economic-model.md "Value provenance") - gewaehlt, nicht aus
+ * verifizierter EVE-Mechanik oder Marktdaten hergeleitet (D011). Diese
+ * Funktion aendert dadurch nichts an der Berechnung selbst - sie ist hier
+ * nur vollstaendig dokumentiert (DECISIONS.md D016, Schritt 4 von Phase 2):
+ *
+ * 1. `competingOrders < 2` -> high (zu wenige konkurrierende Orders)
+ * 2. `!avgDailyVolumeKnown` -> medium ("unbekannt", NICHT "bestaetigt niedrig") -
+ *    laeuft bewusst VOR Punkt 3, damit ein unbekanntes Volumen (Platzhalter 0,
+ *    siehe die Doku auf ScoredBase.avgDailyVolumeKnown oben) niemals als
+ *    beobachtetes Volumen von 0 in Punkt 3 fehlinterpretiert wird
+ *    (D013: "unknown != zero").
+ * 3. `avgDailyVolume < 1` -> high (sehr geringe, tatsaechlich beobachtete Liquiditaet)
+ * 4. `netMarginPct < 3` -> high (sehr knappe Netto-Marge)
+ * 5. `avgDailyVolume < 15 || competingOrders < 5` -> medium (maessige Liquiditaet)
+ * 6. sonst -> low
+ *
+ * Herkunft der Eingaben (siehe DECISIONS.md D016 fuer Details):
+ * `avgDailyVolume`/`avgDailyVolumeKnown` sind echte, aus der ESI-Handels-
+ * historie abgeleitete Werte. `competingOrders` ist bei Station Trading ein
+ * echter, beobachteter Order-Count (`Math.min(sellOrderCount, buyOrderCount)`,
+ * siehe scoreStation) - bei Hauling dagegen aktuell ein SYNTHETISCHER
+ * PLATZHALTER (siehe scoreHaul: `avgDailyVolumeKnown && avgDailyVolume >= 1 ? 5 : 0`),
+ * kein echter Order-Count. Das ist genau der in der Phase-2-Planung fuer
+ * Schritt 6 vorgesehene Punkt ("echte competingOrders fuer Hauling") - hier
+ * (Schritt 4) nur dokumentiert, nicht veraendert. `executableQuantity`
+ * (Schritt 2) fliesst aktuell NICHT in diese Funktion ein.
+ */
 function assessRisk(
   avgDailyVolume: number,
   avgDailyVolumeKnown: boolean,
@@ -135,6 +187,12 @@ function assessRisk(
   };
 }
 
+/**
+ * Divisor fuer den Score (siehe ScoredBase.score) - low=1 (kein Abschlag),
+ * medium=1.35, high=2.2. Drei weitere "configured" Heuristik-Konstanten
+ * (DECISIONS.md D016) - keine aus Verlustwahrscheinlichkeiten oder anderen
+ * Marktdaten hergeleiteten Werte, nur eine Gewichtung fuers Ranking.
+ */
 function riskPenalty(level: RiskLevel): number {
   return level === "high" ? 2.2 : level === "medium" ? 1.35 : 1;
 }
