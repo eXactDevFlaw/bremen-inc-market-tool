@@ -8,7 +8,7 @@
 // Siehe DECISIONS.md D013 (Margin/ROI-Fix), D014 (capitalRequired/Dauer).
 import type { HaulTradeCandidate, StationTradeCandidate, TradeCandidate } from "./analyzer.js";
 import { NO_SKILLS, upwellStructureFeeAssumption, type TradeFeeSkills } from "../economics/fees.js";
-import { computeStationTradeProfit, computeHaulProfit } from "../economics/profit.js";
+import { computeStationTradeProfit, computeHaulProfit, type ProfitCostBreakdown } from "../economics/profit.js";
 import { computeRoiPct } from "../economics/roi.js";
 import { computeConfidence, deriveVolumeSignal } from "../economics/liquidity.js";
 import type { DataFreshness } from "../economics/types.js";
@@ -22,8 +22,26 @@ interface ScoredBase {
   route: string;
   brokerFeePct: number;
   salesTaxPct: number;
+  /**
+   * Schritt 3 von Phase 2 (siehe Projekt-Doku): 1:1 aus dem bereits von
+   * economics/profit.ts#computeStationTradeProfit/computeHaulProfit
+   * berechneten ProfitBreakdown uebernommen (`net.grossRevenue`) - vorher
+   * wurde dieser Wert berechnet und beim Bauen von ScoredCandidate
+   * verworfen. Keine neue Berechnung, keine Aenderung an grossRevenue selbst.
+   */
+  grossRevenue: number;
+  /** Siehe grossRevenue - 1:1 `net.totalCosts` aus demselben ProfitBreakdown. */
+  totalCosts: number;
   netProfitPerUnit: number;
   netMarginPct: number;
+  /**
+   * Kosten-Aufschluesselung fuer Transparenz/spaetere Opportunity-/AI-Schicht
+   * (Purchase/Buy Cost, Broker Fees getrennt nach Kauf-/Verkaufsorder, Sales
+   * Tax) - 1:1 `net.costs` aus demselben ProfitBreakdown, siehe
+   * economics/profit.ts#ProfitCostBreakdown. Keine neuen Kostenarten, nur
+   * Durchreichung der bereits vorhandenen Aufschluesselung.
+   */
+  costs: ProfitCostBreakdown;
   /** ROI = netProfit / capitalRequired * 100 (economics/roi.ts). null wenn capitalRequired <= 0. NICHT dasselbe wie netMarginPct, siehe DECISIONS.md D013. */
   roiPct: number | null;
   /** Vorlaeufig PRO EINHEIT (DECISIONS.md D014) - kein echtes Order-/Positionsgroessen-Kapital, dafuer fehlt aktuell ein Mengenmodell. */
@@ -170,8 +188,11 @@ function scoreStation(c: StationTradeCandidate, skills: TradeFeeSkills, lang: La
     route: c.hub,
     brokerFeePct: net.brokerFeePct,
     salesTaxPct: net.salesTaxPct,
+    grossRevenue: net.grossRevenue,
+    totalCosts: net.totalCosts,
     netProfitPerUnit: net.netProfit,
     netMarginPct: net.netMarginPct,
+    costs: net.costs,
     roiPct,
     capitalRequired,
     expectedDurationHours: null,
@@ -219,8 +240,11 @@ function scoreHaul(c: HaulTradeCandidate, skills: TradeFeeSkills, lang: Lang): S
     route: `${c.buyHub} → ${c.sellHub}`,
     brokerFeePct: net.brokerFeePct,
     salesTaxPct: net.salesTaxPct,
+    grossRevenue: net.grossRevenue,
+    totalCosts: net.totalCosts,
     netProfitPerUnit: net.netProfit,
     netMarginPct: net.netMarginPct,
+    costs: net.costs,
     roiPct,
     capitalRequired,
     expectedDurationHours: null,
