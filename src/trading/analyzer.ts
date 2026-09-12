@@ -46,6 +46,22 @@ export interface StationTradeCandidate {
    * (trading/scoring.ts).
    */
   dataAgeSeconds?: number;
+  /**
+   * Schritt 2 von Phase 2 (siehe Projekt-Doku): wie viele Einheiten anhand der
+   * aktuell geladenen Orderdaten SOFORT (instant-buy/instant-sell gegen eine
+   * bestehende Order) ausfuehrbar waeren - `null`, wenn dafuer keine
+   * belastbare Grundlage besteht.
+   *
+   * Fuer Station Trading (dieser Typ) ist das immer `null`: die hier
+   * modellierte Strategie platziert eine EIGENE Buy- UND eine EIGENE
+   * Sell-Order zu bestBuy/bestSell (siehe economics/profit.ts#computeStationTradeProfit,
+   * `purchaseCost = bestBuy`, nicht `bestSell`) und wartet auf eine
+   * Gegenpartei - es wird gegen KEINE bestehende Order sofort ausgefuehrt.
+   * "Sofort ausfuehrbare Menge" ist fuer diese Strategie konzeptionell nicht
+   * anwendbar, nicht bloss unbekannt - deshalb bewusst immer `null`, nicht
+   * z.B. sellOrderCount/buyOrderCount-basiert geraten.
+   */
+  executableQuantity: number | null;
 }
 
 export interface HaulTradeCandidate {
@@ -64,6 +80,26 @@ export interface HaulTradeCandidate {
   avgDailyVolumeKnown: boolean;
   /** Siehe StationTradeCandidate.dataAgeSeconds. */
   dataAgeSeconds?: number;
+  /**
+   * Sofort per Instant-Buy ausfuehrbare Menge am EINKAUFSORT (buyHub), zum
+   * dort geltenden `buyPrice` - Summe von `volume_remain` ueber alle
+   * Sell-Orders, die exakt zum besten (niedrigsten) Preis stehen (mehrere
+   * Orders koennen zum selben Bestpreis stehen; das ist die tatsaechlich zu
+   * diesem Preis verfuegbare Menge, keine Schaetzung). Deckt NICHT tiefere
+   * Preisstufen im Orderbuch ab (das waere echtes Order-Buch-Tiefe-Walking -
+   * bewusst nicht Teil von Schritt 2, siehe Phase-2-Plan).
+   *
+   * Die Verkaufsseite (sellHub) ist bewusst NICHT eingerechnet: dort wird
+   * KEINE bestehende Order konsumiert, sondern eine eigene Sell-Order
+   * platziert, die auf eine Gegenpartei wartet (analog zu Station Trading) -
+   * das ist eine Liquiditaets-/Wartezeit-Frage, keine sofortige
+   * Ausfuehrbarkeit, und wird deshalb hier nicht mit hineingerechnet (siehe
+   * DECISIONS.md-Hinweis im Abschlussbericht zu Schritt 2).
+   *
+   * `null`, wenn am Einkaufsort keine Sell-Order vorliegt (dann ist auch
+   * `buyPrice` bereits unbestimmt) - nie geraten.
+   */
+  executableQuantity: number | null;
 }
 
 export type TradeCandidate = StationTradeCandidate | HaulTradeCandidate;
@@ -75,11 +111,25 @@ interface HubOrderStats {
   sellOrderCount: number;
   buyOrderCount: number;
   avgDailyVolume: number | null;
+  /** Sofort per Instant-Buy ausfuehrbare Menge zum `bestSell`-Preis - siehe HaulTradeCandidate.executableQuantity. `null` wenn `bestSell` selbst `null` ist. */
+  bestSellExecutableQuantity: number | null;
 }
 
 /** Kombiniert zwei ggf. unbekannte Tagesvolumen (z.B. Kauf-/Verkaufsort eines Haulings) zum Minimum - `null`, sobald eines der beiden unbekannt ist, statt es stillschweigend als 0 zu behandeln. */
 function combineVolume(a: number | null, b: number | null): number | null {
   return a === null || b === null ? null : Math.min(a, b);
+}
+
+/**
+ * Summe von `volume_remain` ueber alle Orders, die exakt zum uebergebenen
+ * Preis stehen (mehrere Orders koennen zum selben Bestpreis stehen) - die
+ * tatsaechlich zu diesem Preis sofort verfuegbare Menge, ohne tiefer ins
+ * Orderbuch zu schauen (siehe HaulTradeCandidate.executableQuantity).
+ * `null`, wenn kein Preis uebergeben wurde (keine passende Order vorhanden).
+ */
+function executableQuantityAtPrice(orders: MarketOrder[], price: number | null): number | null {
+  if (price === null) return null;
+  return orders.filter((o) => o.price === price).reduce((sum, o) => sum + o.volume_remain, 0);
 }
 
 async function mapWithConcurrency<T, R>(
@@ -117,6 +167,7 @@ async function analyzeItem(itemName: string, typeId: number): Promise<TradeCandi
       sellOrderCount: sellOrders.length,
       buyOrderCount: buyOrders.length,
       avgDailyVolume: recentAverageVolume(history),
+      bestSellExecutableQuantity: executableQuantityAtPrice(sellOrders, bestSell),
     };
   });
 
@@ -138,6 +189,7 @@ async function analyzeItem(itemName: string, typeId: number): Promise<TradeCandi
         buyOrderCount: stat.buyOrderCount,
         avgDailyVolume: stat.avgDailyVolume ?? 0,
         avgDailyVolumeKnown: stat.avgDailyVolume !== null,
+        executableQuantity: null,
       });
     }
   }
@@ -162,6 +214,7 @@ async function analyzeItem(itemName: string, typeId: number): Promise<TradeCandi
         profitPct: (profitPerUnit / buyHubStat.bestSell) * 100,
         avgDailyVolume: combinedVolume ?? 0,
         avgDailyVolumeKnown: combinedVolume !== null,
+        executableQuantity: buyHubStat.bestSellExecutableQuantity,
       });
     }
   }
@@ -187,6 +240,8 @@ interface HubTypeStats {
   bestBuy: number | null;
   sellOrderCount: number;
   buyOrderCount: number;
+  /** Sofort ausfuehrbare Menge zum `bestSell`-Preis - siehe HaulTradeCandidate.executableQuantity. Waechst bei mehreren Orders zum exakt gleichen Bestpreis, wird bei einem strikt besseren Preis auf den neuen Order-Bestand zurueckgesetzt. */
+  bestSellExecutableQuantity: number | null;
 }
 
 /** Fasst das Orderbuch einer Region auf die an EINER Station (dem Hub) stehenden Orders zusammen, gruppiert nach Type-ID. */
@@ -196,7 +251,7 @@ function buildHubStatsByType(orders: MarketOrder[], stationId: number): Map<numb
     if (o.location_id !== stationId) continue;
     let stats = map.get(o.type_id);
     if (!stats) {
-      stats = { bestSell: null, bestBuy: null, sellOrderCount: 0, buyOrderCount: 0 };
+      stats = { bestSell: null, bestBuy: null, sellOrderCount: 0, buyOrderCount: 0, bestSellExecutableQuantity: null };
       map.set(o.type_id, stats);
     }
     if (o.is_buy_order) {
@@ -204,7 +259,12 @@ function buildHubStatsByType(orders: MarketOrder[], stationId: number): Map<numb
       if (stats.bestBuy === null || o.price > stats.bestBuy) stats.bestBuy = o.price;
     } else {
       stats.sellOrderCount++;
-      if (stats.bestSell === null || o.price < stats.bestSell) stats.bestSell = o.price;
+      if (stats.bestSell === null || o.price < stats.bestSell) {
+        stats.bestSell = o.price;
+        stats.bestSellExecutableQuantity = o.volume_remain;
+      } else if (o.price === stats.bestSell) {
+        stats.bestSellExecutableQuantity = (stats.bestSellExecutableQuantity ?? 0) + o.volume_remain;
+      }
     }
   }
   return map;
@@ -233,6 +293,8 @@ interface RawHaulCandidate {
   profitPerUnit: number;
   profitPct: number;
   rawScore: number;
+  /** Siehe HaulTradeCandidate.executableQuantity - hier bereits aus HubTypeStats.bestSellExecutableQuantity des Einkaufsorts uebernommen. */
+  executableQuantity: number | null;
 }
 
 type RawCandidate = RawStationCandidate | RawHaulCandidate;
@@ -313,6 +375,7 @@ export async function findTradeCandidatesFullMarket(): Promise<TradeCandidate[]>
           profitPerUnit,
           profitPct,
           rawScore: profitPct * Math.log10(liquidityProxy + 2),
+          executableQuantity: buyHubStat.s.bestSellExecutableQuantity,
         });
       }
     }
@@ -361,6 +424,7 @@ export async function findTradeCandidatesFullMarket(): Promise<TradeCandidate[]>
         avgDailyVolume: rawVolume ?? 0,
         avgDailyVolumeKnown: rawVolume !== null,
         dataAgeSeconds: getFullRegionOrderBookAgeSeconds(c.hub.regionId) ?? undefined,
+        executableQuantity: null,
       });
     } else {
       const buyVolume = volumeByKey.get(`${c.buyHub.regionId}:${c.typeId}`) ?? null;
@@ -384,6 +448,7 @@ export async function findTradeCandidatesFullMarket(): Promise<TradeCandidate[]>
         avgDailyVolume: combinedVolume ?? 0,
         avgDailyVolumeKnown: combinedVolume !== null,
         dataAgeSeconds,
+        executableQuantity: c.executableQuantity,
       });
     }
   }
@@ -437,6 +502,7 @@ async function analyzeItemAtLocation(
     buyOrderCount: buyOrders.length,
     avgDailyVolume: volume ?? 0,
     avgDailyVolumeKnown: volume !== null,
+    executableQuantity: null,
   };
 }
 
@@ -474,6 +540,15 @@ export interface RouteItemQuote {
   avgDailyVolume: number;
   /** Siehe StationTradeCandidate.avgDailyVolumeKnown. */
   avgDailyVolumeKnown: boolean;
+  /**
+   * Sofort per Instant-Buy am Einkaufsort (`from`) ausfuehrbare Menge, zum
+   * dort geltenden `buyPrice` - siehe HaulTradeCandidate.executableQuantity
+   * fuer die vollstaendige Begruendung (Summe von `volume_remain` ueber alle
+   * Sell-Orders exakt zum Bestpreis, keine tieferen Orderbuch-Ebenen). Die
+   * Verkaufsseite (`to`) ist bewusst nicht eingerechnet, aus denselben
+   * Gruenden wie dort. `null`, wenn am Einkaufsort keine Sell-Order vorliegt.
+   */
+  executableQuantity: number | null;
 }
 
 /** Fragt fuer ein Item die Instant-Buy-/Instant-Sell-Preise an zwei unabhaengigen Orten ab. */
@@ -502,6 +577,7 @@ export async function quoteItemAtTwoLocations(
   const buyPrice = fromSellOrders.length ? Math.min(...fromSellOrders.map((o) => o.price)) : null;
   const sellPrice = toBuyOrders.length ? Math.max(...toBuyOrders.map((o) => o.price)) : null;
   const combinedVolume = combineVolume(recentAverageVolume(fromHistory), recentAverageVolume(toHistory));
+  const executableQuantity = executableQuantityAtPrice(fromSellOrders, buyPrice);
 
   return {
     itemName,
@@ -512,6 +588,7 @@ export async function quoteItemAtTwoLocations(
     sellOrderCount: toBuyOrders.length,
     avgDailyVolume: combinedVolume ?? 0,
     avgDailyVolumeKnown: combinedVolume !== null,
+    executableQuantity,
   };
 }
 
@@ -550,6 +627,7 @@ export async function findRouteCandidates(
       profitPct: (profitPerUnit / q.buyPrice) * 100,
       avgDailyVolume: q.avgDailyVolume,
       avgDailyVolumeKnown: q.avgDailyVolumeKnown,
+      executableQuantity: q.executableQuantity,
     });
   }
   return candidates;
