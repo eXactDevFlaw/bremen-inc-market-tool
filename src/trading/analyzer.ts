@@ -12,6 +12,15 @@ import { pick, type Lang } from "../i18n.js";
 
 export interface StationTradeCandidate {
   kind: "station";
+  /**
+   * EVE-Type-ID des Items - Schritt 1 von Phase 2 (siehe Projekt-Doku
+   * "phase2-trading-intelligence-plan.md"): vorher fehlte diese Identitaet
+   * auf den oeffentlichen Candidate-Typen (nur `itemName` als Anzeigetext),
+   * obwohl sie an jeder Konstruktionsstelle bereits vorliegt. Noetig, damit
+   * eine spaetere Opportunity-Schicht Items eindeutig referenzieren kann statt
+   * ueber den Anzeigenamen zu joinen.
+   */
+  typeId: number;
   itemName: string;
   hub: string;
   bestSell: number;
@@ -41,6 +50,8 @@ export interface StationTradeCandidate {
 
 export interface HaulTradeCandidate {
   kind: "haul";
+  /** Siehe StationTradeCandidate.typeId. */
+  typeId: number;
   itemName: string;
   buyHub: string;
   sellHub: string;
@@ -116,6 +127,7 @@ async function analyzeItem(itemName: string, typeId: number): Promise<TradeCandi
       const spread = stat.bestSell - stat.bestBuy;
       candidates.push({
         kind: "station",
+        typeId,
         itemName,
         hub: stat.hub.name,
         bestSell: stat.bestSell,
@@ -140,6 +152,7 @@ async function analyzeItem(itemName: string, typeId: number): Promise<TradeCandi
       const combinedVolume = combineVolume(buyHubStat.avgDailyVolume, sellHubStat.avgDailyVolume);
       candidates.push({
         kind: "haul",
+        typeId,
         itemName,
         buyHub: buyHubStat.hub.name,
         sellHub: sellHubStat.hub.name,
@@ -336,6 +349,7 @@ export async function findTradeCandidatesFullMarket(): Promise<TradeCandidate[]>
       const rawVolume = volumeByKey.get(`${c.hub.regionId}:${c.typeId}`) ?? null;
       candidates.push({
         kind: "station",
+        typeId: c.typeId,
         itemName,
         hub: c.hub.name,
         bestSell: c.bestSell,
@@ -359,6 +373,7 @@ export async function findTradeCandidatesFullMarket(): Promise<TradeCandidate[]>
       const dataAgeSeconds = buyAge === null && sellAge === null ? undefined : Math.max(buyAge ?? 0, sellAge ?? 0);
       candidates.push({
         kind: "haul",
+        typeId: c.typeId,
         itemName,
         buyHub: c.buyHub.name,
         sellHub: c.sellHub.name,
@@ -411,6 +426,7 @@ async function analyzeItemAtLocation(
   const volume = recentAverageVolume(history);
   return {
     kind: "station",
+    typeId,
     itemName,
     hub: placeLabel,
     bestSell: bestSellOrder.price,
@@ -524,6 +540,7 @@ export async function findRouteCandidates(
     if (profitPerUnit <= 0) continue;
     candidates.push({
       kind: "haul",
+      typeId: q.typeId,
       itemName: q.itemName,
       buyHub: from.label,
       sellHub: to.label,
