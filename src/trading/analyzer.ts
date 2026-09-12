@@ -1,6 +1,13 @@
 import { resolveNames, resolveTypeIdsByName, type ResolvedLocation } from "../esi/universe.js";
 import { TRADE_HUBS, DEFAULT_WATCHLIST, type TradeHub } from "./hubs.js";
-import { getFullRegionOrderBook, getMarketHistory, getMarketOrders, recentAverageVolume, type MarketOrder } from "./marketData.js";
+import {
+  getFullRegionOrderBook,
+  getFullRegionOrderBookAgeSeconds,
+  getMarketHistory,
+  getMarketOrders,
+  recentAverageVolume,
+  type MarketOrder,
+} from "./marketData.js";
 import { pick, type Lang } from "../i18n.js";
 
 export interface StationTradeCandidate {
@@ -14,6 +21,22 @@ export interface StationTradeCandidate {
   sellOrderCount: number;
   buyOrderCount: number;
   avgDailyVolume: number;
+  /**
+   * false, wenn avgDailyVolume mangels Handelshistorie auf 0 ausgewichen ist
+   * (DECISIONS.md D013) - true bedeutet ein tatsaechlich aus der ESI-Historie
+   * beobachteter Wert (auch wenn dieser zufaellig 0 ist). Downstream-Code
+   * (scoring.ts) soll bei false NICHT von "kein Handel" ausgehen, sondern von
+   * "Volumen unbekannt".
+   */
+  avgDailyVolumeKnown: boolean;
+  /**
+   * Alter (Sekunden) der zugrundeliegenden Orderdaten, sofern bekannt (siehe
+   * marketData.ts#getFullRegionOrderBookAgeSeconds) - undefined, wenn die
+   * Daten gerade eben live abgefragt wurden (kein Cache im Spiel), dann als
+   * praktisch frisch (0s) zu behandeln. Fuer ScoredCandidate.dataFreshness
+   * (trading/scoring.ts).
+   */
+  dataAgeSeconds?: number;
 }
 
 export interface HaulTradeCandidate {
@@ -26,6 +49,10 @@ export interface HaulTradeCandidate {
   profitPerUnit: number;
   profitPct: number;
   avgDailyVolume: number;
+  /** Siehe StationTradeCandidate.avgDailyVolumeKnown. */
+  avgDailyVolumeKnown: boolean;
+  /** Siehe StationTradeCandidate.dataAgeSeconds. */
+  dataAgeSeconds?: number;
 }
 
 export type TradeCandidate = StationTradeCandidate | HaulTradeCandidate;
@@ -36,7 +63,12 @@ interface HubOrderStats {
   bestBuy: number | null;
   sellOrderCount: number;
   buyOrderCount: number;
-  avgDailyVolume: number;
+  avgDailyVolume: number | null;
+}
+
+/** Kombiniert zwei ggf. unbekannte Tagesvolumen (z.B. Kauf-/Verkaufsort eines Haulings) zum Minimum - `null`, sobald eines der beiden unbekannt ist, statt es stillschweigend als 0 zu behandeln. */
+function combineVolume(a: number | null, b: number | null): number | null {
+  return a === null || b === null ? null : Math.min(a, b);
 }
 
 async function mapWithConcurrency<T, R>(
@@ -92,7 +124,8 @@ async function analyzeItem(itemName: string, typeId: number): Promise<TradeCandi
         spreadPct: (spread / stat.bestSell) * 100,
         sellOrderCount: stat.sellOrderCount,
         buyOrderCount: stat.buyOrderCount,
-        avgDailyVolume: stat.avgDailyVolume,
+        avgDailyVolume: stat.avgDailyVolume ?? 0,
+        avgDailyVolumeKnown: stat.avgDailyVolume !== null,
       });
     }
   }
@@ -104,6 +137,7 @@ async function analyzeItem(itemName: string, typeId: number): Promise<TradeCandi
       if (sellHubStat.bestSell == null) continue;
       const profitPerUnit = sellHubStat.bestSell - buyHubStat.bestSell;
       if (profitPerUnit <= 0) continue;
+      const combinedVolume = combineVolume(buyHubStat.avgDailyVolume, sellHubStat.avgDailyVolume);
       candidates.push({
         kind: "haul",
         itemName,
@@ -113,7 +147,8 @@ async function analyzeItem(itemName: string, typeId: number): Promise<TradeCandi
         sellPrice: sellHubStat.bestSell,
         profitPerUnit,
         profitPct: (profitPerUnit / buyHubStat.bestSell) * 100,
-        avgDailyVolume: Math.min(buyHubStat.avgDailyVolume, sellHubStat.avgDailyVolume),
+        avgDailyVolume: combinedVolume ?? 0,
+        avgDailyVolumeKnown: combinedVolume !== null,
       });
     }
   }
@@ -295,7 +330,10 @@ export async function findTradeCandidatesFullMarket(): Promise<TradeCandidate[]>
   for (const c of shortlisted) {
     const itemName = names.get(c.typeId) ?? `#${c.typeId}`;
     if (c.kind === "station") {
-      const avgDailyVolume = volumeByKey.get(`${c.hub.regionId}:${c.typeId}`) ?? 0;
+      // volumeByKey.get(...) liefert `undefined`, wenn der Key nie abgefragt wurde
+      // (sollte hier nicht vorkommen), und `null`, wenn ESI keine Historie hatte -
+      // beides zaehlt als "unbekannt", nicht als beobachtete 0.
+      const rawVolume = volumeByKey.get(`${c.hub.regionId}:${c.typeId}`) ?? null;
       candidates.push({
         kind: "station",
         itemName,
@@ -306,13 +344,19 @@ export async function findTradeCandidatesFullMarket(): Promise<TradeCandidate[]>
         spreadPct: c.spreadPct,
         sellOrderCount: c.sellOrderCount,
         buyOrderCount: c.buyOrderCount,
-        avgDailyVolume,
+        avgDailyVolume: rawVolume ?? 0,
+        avgDailyVolumeKnown: rawVolume !== null,
+        dataAgeSeconds: getFullRegionOrderBookAgeSeconds(c.hub.regionId) ?? undefined,
       });
     } else {
-      const avgDailyVolume = Math.min(
-        volumeByKey.get(`${c.buyHub.regionId}:${c.typeId}`) ?? 0,
-        volumeByKey.get(`${c.sellHub.regionId}:${c.typeId}`) ?? 0,
-      );
+      const buyVolume = volumeByKey.get(`${c.buyHub.regionId}:${c.typeId}`) ?? null;
+      const sellVolume = volumeByKey.get(`${c.sellHub.regionId}:${c.typeId}`) ?? null;
+      const combinedVolume = combineVolume(buyVolume, sellVolume);
+      // Konservativ das AELTERE der beiden Orderbuecher als massgeblich fuer
+      // die Freshness nehmen (der schlechtere der beiden Werte).
+      const buyAge = getFullRegionOrderBookAgeSeconds(c.buyHub.regionId);
+      const sellAge = getFullRegionOrderBookAgeSeconds(c.sellHub.regionId);
+      const dataAgeSeconds = buyAge === null && sellAge === null ? undefined : Math.max(buyAge ?? 0, sellAge ?? 0);
       candidates.push({
         kind: "haul",
         itemName,
@@ -322,7 +366,9 @@ export async function findTradeCandidatesFullMarket(): Promise<TradeCandidate[]>
         sellPrice: c.sellPrice,
         profitPerUnit: c.profitPerUnit,
         profitPct: c.profitPct,
-        avgDailyVolume,
+        avgDailyVolume: combinedVolume ?? 0,
+        avgDailyVolumeKnown: combinedVolume !== null,
+        dataAgeSeconds,
       });
     }
   }
@@ -362,6 +408,7 @@ async function analyzeItemAtLocation(
   }
 
   const spread = bestSellOrder.price - bestBuyOrder.price;
+  const volume = recentAverageVolume(history);
   return {
     kind: "station",
     itemName,
@@ -372,7 +419,8 @@ async function analyzeItemAtLocation(
     spreadPct: (spread / bestSellOrder.price) * 100,
     sellOrderCount: sellOrders.length,
     buyOrderCount: buyOrders.length,
-    avgDailyVolume: recentAverageVolume(history),
+    avgDailyVolume: volume ?? 0,
+    avgDailyVolumeKnown: volume !== null,
   };
 }
 
@@ -408,6 +456,8 @@ export interface RouteItemQuote {
   buyOrderCount: number;
   sellOrderCount: number;
   avgDailyVolume: number;
+  /** Siehe StationTradeCandidate.avgDailyVolumeKnown. */
+  avgDailyVolumeKnown: boolean;
 }
 
 /** Fragt fuer ein Item die Instant-Buy-/Instant-Sell-Preise an zwei unabhaengigen Orten ab. */
@@ -435,6 +485,7 @@ export async function quoteItemAtTwoLocations(
 
   const buyPrice = fromSellOrders.length ? Math.min(...fromSellOrders.map((o) => o.price)) : null;
   const sellPrice = toBuyOrders.length ? Math.max(...toBuyOrders.map((o) => o.price)) : null;
+  const combinedVolume = combineVolume(recentAverageVolume(fromHistory), recentAverageVolume(toHistory));
 
   return {
     itemName,
@@ -443,7 +494,8 @@ export async function quoteItemAtTwoLocations(
     sellPrice,
     buyOrderCount: fromSellOrders.length,
     sellOrderCount: toBuyOrders.length,
-    avgDailyVolume: Math.min(recentAverageVolume(fromHistory), recentAverageVolume(toHistory)),
+    avgDailyVolume: combinedVolume ?? 0,
+    avgDailyVolumeKnown: combinedVolume !== null,
   };
 }
 
@@ -480,6 +532,7 @@ export async function findRouteCandidates(
       profitPerUnit,
       profitPct: (profitPerUnit / q.buyPrice) * 100,
       avgDailyVolume: q.avgDailyVolume,
+      avgDailyVolumeKnown: q.avgDailyVolumeKnown,
     });
   }
   return candidates;

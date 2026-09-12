@@ -6,17 +6,7 @@ import { getCorpAssets, getCorpWalletsWithNames } from "../esi/corp.js";
 import { resolveNames } from "../esi/universe.js";
 import { computeOrderSlotAnalysis, type OrderSlotAnalysis } from "../trading/orderSlots.js";
 import { getAllTypePrices } from "../trading/marketData.js";
-import type { AssetEntry } from "../esi/assets.js";
-
-/** Grobe Wertschaetzung ueber die Bulk-Durchschnittspreise; -1/-2 = Blueprint-Original/-Kopie (kein Stack-Count), als 1 Stueck gewertet. */
-function estimateAssetValue(assets: AssetEntry[], prices: Map<number, number>): number {
-  return assets.reduce((sum, a) => {
-    const price = prices.get(a.type_id);
-    if (price === undefined) return sum;
-    const effectiveQuantity = a.quantity < 0 ? 1 : a.quantity;
-    return sum + price * effectiveQuantity;
-  }, 0);
-}
+import { totalAssetValue } from "../economics/assetValue.js";
 
 export const overviewRouter = Router();
 
@@ -71,7 +61,7 @@ overviewRouter.get("/", async (_req, res) => {
             buyValue: buyOrders.reduce((sum, o) => sum + o.price * o.volume_remain, 0),
           },
           assetCount: assets.length,
-          assetValue: estimateAssetValue(assets, prices),
+          assetValue: totalAssetValue(assets, prices),
         };
       } catch (err) {
         return {
@@ -106,7 +96,7 @@ overviewRouter.get("/", async (_req, res) => {
         corporationName: group.corporationName,
         wallets,
         assetCount: assets ? assets.length : null,
-        assetValue: assets ? estimateAssetValue(assets, prices) : null,
+        assetValue: assets ? totalAssetValue(assets, prices) : null,
       };
     }),
   );

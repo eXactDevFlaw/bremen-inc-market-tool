@@ -7,6 +7,7 @@ import { resolveNames } from "../esi/universe.js";
 import { EsiError } from "../esi/client.js";
 import { buildFocusedSkillPlan, buildTradingSkillProfile, type ProfitFocus } from "../trading/skillAdvisor.js";
 import { getAllTypePrices } from "../trading/marketData.js";
+import { assetUnitValue } from "../economics/assetValue.js";
 import { ESI_SCOPES } from "../config.js";
 import { parseLang } from "../i18n.js";
 
@@ -75,10 +76,6 @@ charactersRouter.get("/:id/assets", async (req, res) => {
     ]);
     const locations = await resolveAssetLocations(characterId, assets, character?.scopes ?? "");
     const withLocations = assets.map((a) => {
-      // ESI-Konvention: quantity -1 = Blueprint-Original, -2 = Blueprint-Kopie
-      // (kein Stack-Count). Fuer die Wertschaetzung als 1 Stueck behandeln,
-      // sonst wuerde die Multiplikation einen negativen "Wert" ergeben.
-      const effectiveQuantity = a.quantity < 0 ? 1 : a.quantity;
       const unitPrice = prices.get(a.type_id) ?? null;
       return {
         ...a,
@@ -91,7 +88,10 @@ charactersRouter.get("/:id/assets", async (req, res) => {
           regionName: null,
         }),
         unitPrice,
-        totalValue: unitPrice !== null ? unitPrice * effectiveQuantity : null,
+        // Gemeinsame Bewertungslogik (Blueprint-Original/-Kopie -1/-2 als 1
+        // Stueck gewertet) - siehe economics/assetValue.ts. Vorher hier und
+        // in routes/overview.ts unabhaengig dupliziert.
+        totalValue: assetUnitValue(unitPrice, a.quantity),
       };
     });
     res.json(withLocations);

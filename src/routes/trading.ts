@@ -8,7 +8,9 @@ import {
 } from "../trading/analyzer.js";
 import { rankCandidatesLocally, type ScoredCandidate } from "../trading/scoring.js";
 import { getGroqDailyAnalysis, MissingGroqKeyError } from "../ai/groqAdvisor.js";
-import { netHaulProfit, type TradeFeeSkills } from "../trading/fees.js";
+import type { TradeFeeSkills } from "../trading/fees.js";
+import { computeHaulProfit } from "../economics/profit.js";
+import { computeRoiPct } from "../economics/roi.js";
 import { getCharacterWalletBalance, getSkillLevelsByName } from "../esi/character.js";
 import { DEFAULT_WATCHLIST, EXPANDED_WATCHLIST, TRADE_HUBS } from "../trading/hubs.js";
 import { getMarketHistory } from "../trading/marketData.js";
@@ -238,7 +240,13 @@ tradingRouter.get("/route", async (req, res) => {
         return;
       }
 
-      const net = netHaulProfit(quote.buyPrice, quote.sellPrice, skills);
+      // computeHaulProfit() statt der frueheren netHaulProfit() (trading/fees.ts,
+      // jetzt entfernt) - netMarginPct ist jetzt einheitlich ./. sellPrice
+      // definiert (DECISIONS.md D013). Der bisherige (./. buyPrice) Zahlenwert
+      // lebt unveraendert als roiPct weiter.
+      const net = computeHaulProfit(quote.buyPrice, quote.sellPrice, skills);
+      const capitalRequired = quote.buyPrice; // vorlaeufig pro Einheit, siehe DECISIONS.md D014
+      const roiPct = computeRoiPct(net.netProfit, capitalRequired);
       res.json({
         mode: "single_item",
         item: { typeId, name: resolvedName },
@@ -250,12 +258,15 @@ tradingRouter.get("/route", async (req, res) => {
         buyOrderCount: quote.buyOrderCount,
         sellOrderCount: quote.sellOrderCount,
         avgDailyVolume: quote.avgDailyVolume,
+        avgDailyVolumeKnown: quote.avgDailyVolumeKnown,
         brokerFeePct: net.brokerFeePct,
         salesTaxPct: net.salesTaxPct,
         sellOrderFee: quote.sellPrice * (net.brokerFeePct / 100),
         salesTax: quote.sellPrice * (net.salesTaxPct / 100),
-        netProfitPerUnit: net.netProfitPerUnit,
+        netProfitPerUnit: net.netProfit,
         netMarginPct: net.netMarginPct,
+        roiPct,
+        capitalRequired,
         skillsSource,
         walletBalance,
         maxUnitsWithinWallet: walletBalance && quote.buyPrice > 0 ? Math.floor(walletBalance / quote.buyPrice) : null,

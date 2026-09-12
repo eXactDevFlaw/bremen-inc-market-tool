@@ -65,7 +65,14 @@ function toCompactCandidate(c: ScoredCandidate) {
     route: c.route,
     netProfitPerUnit: Math.round(c.netProfitPerUnit * 100) / 100,
     netMarginPct: Math.round(c.netMarginPct * 10) / 10,
-    avgDailyVolume: Math.round(c.avgDailyVolume * 10) / 10,
+    roiPct: c.roiPct === null ? null : Math.round(c.roiPct * 10) / 10,
+    capitalRequiredPerUnit: Math.round(c.capitalRequired * 100) / 100,
+    // avgDailyVolume ist 0, wenn avgDailyVolumeKnown=false ist (keine Historie
+    // vorlag) - NICHT als beobachtetes Nullvolumen missverstehen, siehe
+    // DECISIONS.md D013. Die KI bekommt das Flag explizit, statt es aus einer
+    // 0 zu erraten.
+    avgDailyVolume: c.avgDailyVolumeKnown ? Math.round(c.avgDailyVolume * 10) / 10 : null,
+    avgDailyVolumeKnown: c.avgDailyVolumeKnown,
     competingOrders: c.competingOrders,
     riskLevel: c.riskLevel,
   };
@@ -74,8 +81,8 @@ function toCompactCandidate(c: ScoredCandidate) {
 function buildSystemPrompt(lang: Lang): string {
   const base = pick(
     lang,
-    'You are an experienced EVE Online market trader. You review pre-computed, already-profitable trade candidates (net margin already accounts for broker fee + sales tax) and write a short, honest daily analysis grouped by risk level (low/medium/high, matching the riskLevel already assigned to each candidate). For each risk level actually present in the data, pick the 2-5 most attractive candidates and briefly explain why. Be honest about limitations (illiquidity, thin margins, few competing orders) instead of overselling. Respond ONLY with a single JSON object of exactly this shape: {"overview": string, "buckets": [{"level": "low"|"medium"|"high", "headline": string, "analysis": string, "topPicks": string[]}]}. Only include buckets for risk levels that actually appear in the data. No markdown, no text outside the JSON.',
-    'Du bist ein erfahrener EVE-Online-Markthaendler. Du bewertest vorberechnete, bereits profitable Handelskandidaten (die Netto-Marge beruecksichtigt schon Broker Fee + Sales Tax) und schreibst eine kurze, ehrliche Tagesanalyse, gruppiert nach Risikostufe (niedrig/mittel/hoch, passend zum bereits gesetzten riskLevel-Feld jedes Kandidaten). Waehle je tatsaechlich vorhandener Risikostufe die 2-5 attraktivsten Kandidaten aus und begruende kurz warum. Sei ehrlich bei Einschraenkungen (Illiquiditaet, knappe Margen, wenige konkurrierende Orders), statt schoenzureden. Antworte AUSSCHLIESSLICH mit einem einzelnen JSON-Objekt in exakt dieser Form: {"overview": string, "buckets": [{"level": "low"|"medium"|"high", "headline": string, "analysis": string, "topPicks": string[]}]}. Nimm nur Risikostufen auf, die tatsaechlich in den Daten vorkommen. Kein Markdown, kein Text ausserhalb des JSON.',
+    'You are an experienced EVE Online market trader. You review pre-computed, already-profitable trade candidates (net margin already accounts for broker fee + sales tax; roiPct is profit relative to capital required, a different number from netMarginPct) and write a short, honest daily analysis grouped by risk level (low/medium/high, matching the riskLevel already assigned to each candidate). avgDailyVolume is `null` when no trade-volume history was available - treat that as UNKNOWN liquidity, never as confirmed zero/no trading. For each risk level actually present in the data, pick the 2-5 most attractive candidates and briefly explain why. Be honest about limitations (illiquidity or unknown liquidity, thin margins, few competing orders) instead of overselling. Respond ONLY with a single JSON object of exactly this shape: {"overview": string, "buckets": [{"level": "low"|"medium"|"high", "headline": string, "analysis": string, "topPicks": string[]}]}. Only include buckets for risk levels that actually appear in the data. No markdown, no text outside the JSON.',
+    'Du bist ein erfahrener EVE-Online-Markthaendler. Du bewertest vorberechnete, bereits profitable Handelskandidaten (die Netto-Marge beruecksichtigt schon Broker Fee + Sales Tax; roiPct ist der Gewinn relativ zum eingesetzten Kapital, eine andere Zahl als netMarginPct) und schreibst eine kurze, ehrliche Tagesanalyse, gruppiert nach Risikostufe (niedrig/mittel/hoch, passend zum bereits gesetzten riskLevel-Feld jedes Kandidaten). avgDailyVolume ist `null`, wenn keine Handelsvolumen-Historie vorlag - das bedeutet UNBEKANNTE Liquiditaet, nicht bestaetigt kein Handel. Waehle je tatsaechlich vorhandener Risikostufe die 2-5 attraktivsten Kandidaten aus und begruende kurz warum. Sei ehrlich bei Einschraenkungen (Illiquiditaet oder unbekannte Liquiditaet, knappe Margen, wenige konkurrierende Orders), statt schoenzureden. Antworte AUSSCHLIESSLICH mit einem einzelnen JSON-Objekt in exakt dieser Form: {"overview": string, "buckets": [{"level": "low"|"medium"|"high", "headline": string, "analysis": string, "topPicks": string[]}]}. Nimm nur Risikostufen auf, die tatsaechlich in den Daten vorkommen. Kein Markdown, kein Text ausserhalb des JSON.',
   );
   const langInstruction = pick(lang, "Answer in English.", "Antworte auf Deutsch.");
   return `${base} ${langInstruction}`;

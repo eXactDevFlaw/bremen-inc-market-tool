@@ -37,8 +37,18 @@ export async function getMarketHistory(regionId: number, typeId: number): Promis
   }
 }
 
-export function recentAverageVolume(history: MarketHistoryDay[], days = 7): number {
-  if (history.length === 0) return 0;
+/**
+ * Durchschnittliches Tagesvolumen aus der ESI-Historie. Gibt `null` zurueck,
+ * wenn keine Historie vorliegt - VORHER (bis DECISIONS.md D013) gab diese
+ * Funktion bei fehlender Historie still `0` zurueck, was dann ununterscheidbar
+ * von einem tatsaechlich beobachteten Volumen von 0 in die Risikobewertung
+ * einging (docs/economic-model.md, "Missing values": "Never silently
+ * interpret missing volume as zero"). Aufrufer sollen `null` ueber
+ * economics/liquidity.ts#deriveVolumeSignal explizit als "unknown" behandeln,
+ * statt es direkt als Zahl weiterzurechnen.
+ */
+export function recentAverageVolume(history: MarketHistoryDay[], days = 7): number | null {
+  if (history.length === 0) return null;
   const recent = history.slice(-days);
   return recent.reduce((sum, d) => sum + d.volume, 0) / recent.length;
 }
@@ -86,6 +96,18 @@ export async function getFullRegionOrderBook(regionId: number): Promise<MarketOr
     });
   orderBookInflight.set(regionId, promise);
   return promise;
+}
+
+/**
+ * Alter (in Sekunden) des zwischengespeicherten Orderbuchs einer Region,
+ * fuer dataFreshness in ScoredCandidate (siehe trading/scoring.ts). `null`,
+ * wenn noch nichts gecacht ist (sollte nicht vorkommen, wenn direkt nach
+ * getFullRegionOrderBook() aufgerufen).
+ */
+export function getFullRegionOrderBookAgeSeconds(regionId: number): number | null {
+  const cached = orderBookCache.get(regionId);
+  if (!cached) return null;
+  return Math.round((Date.now() - cached.at) / 1000);
 }
 
 // ---------- Grobe Durchschnittspreise fuer die Asset-Wertschaetzung ----------
