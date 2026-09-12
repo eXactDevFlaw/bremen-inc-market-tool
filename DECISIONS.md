@@ -342,3 +342,120 @@ economically true about a candidate. This mirrors D002's existing rule
 and is restated here explicitly because Step 4 exists precisely to
 make that boundary visible in the places (`scoring.ts`,
 `economics/liquidity.ts`) where both kinds of values sit side by side.
+
+## D017 — Introduce `src/opportunities/` as a trading-only extraction (Phase 2 Step 5)
+
+Phase 2 Step 5 adds a new `src/opportunities/` layer (see
+`ARCHITECTURE.md`, "Opportunity Engine" → "Current status") without
+migrating any existing consumer onto it. `routes/trading.ts` and
+`src/trading/scoring.ts` are unchanged and remain the active path for
+the current API/UI; the new layer exists alongside them, unused by
+production code, until a later, explicitly reviewed migration step.
+
+### What was added
+
+- `src/opportunities/types.ts` — `TradingOpportunity`, a normalized
+  representation for a single trading or hauling candidate.
+- `src/opportunities/trading.ts` — two pure conversion functions,
+  `stationCandidateToOpportunity(candidate, scored)` and
+  `haulCandidateToOpportunity(candidate, scored)`, each taking the
+  existing raw candidate (`StationTradeCandidate`/`HaulTradeCandidate`,
+  `trading/analyzer.ts`) together with its already-computed
+  `ScoredCandidate` (`trading/scoring.ts`) and returning a
+  `TradingOpportunity`. Matching the candidate to its `ScoredCandidate`
+  is the caller's responsibility; these functions do not rank, filter,
+  or calculate anything themselves.
+
+### Core architectural rule (restated for this layer specifically)
+
+Opportunity objects are normalized domain outputs. They must not
+independently calculate economic truth — every economic value
+(`grossRevenue`, `totalCosts`, `costs`, `netProfit`, `netMarginPct`,
+`roiPct`, fee percentages) is copied unchanged from the already-computed
+`ScoredCandidate`, which itself comes unchanged from
+`economics/profit.ts`/`economics/roi.ts` (D013/D016). No fee, margin, or
+ROI formula is duplicated in `opportunities/trading.ts`. The one
+transformation this layer is allowed to perform is *representation*
+normalization, not calculation — see "Representation choices" below.
+
+### Why `TradingOpportunity` is not simply `economics/types.ts#Opportunity`
+
+`Opportunity` is the longer-term, cross-domain target contract from
+Phase 1 (trading/hauling/industry/exploration). `TradingOpportunity` is
+a narrower, concrete stepping stone based on what `ScoredCandidate`
+actually contains today. Differences, deliberately not reconciled in
+this step:
+
+- **`domain`/`action` shape.** `Opportunity.domain` treats `"trading"`
+  and `"hauling"` as two separate, equal-rank domain values.
+  `TradingOpportunity` (per this step's own specification) treats both
+  as `action` values (`"station_trade" | "hauling"`) within one domain,
+  `"trading"`. These two models disagree and are not unified here —
+  left as an open question for whichever future step actually merges
+  the per-activity opportunity types into the shared `Opportunity`
+  contract.
+- **Flat numbers instead of `Provenanced<T>`.** `Opportunity` wraps its
+  economic fields in `Provenanced<number>`. `TradingOpportunity` keeps
+  them as plain `number` (`capitalRequired`, `grossRevenue`,
+  `totalCosts`, `netProfit`, `netMarginPct`) because, at the point a
+  `ScoredCandidate` exists, these values are always concretely known
+  (candidates without positive net profit are filtered out before a
+  `ScoredCandidate` is built) — wrapping an always-known value in
+  `Provenanced<T>` would add ceremony without new information. No
+  Provenance refactor was performed (out of scope for this step, per
+  its own instructions); `Provenanced<T>` remains reserved for where it
+  already does real work (`economics/liquidity.ts`, see D016).
+- **`confidence: number`, not a category/string.** The value already
+  produced by `computeConfidence()` is a plain `0..1` number, so
+  `TradingOpportunity.confidence` reflects that directly.
+- **`source`/`destination: string | null`, not numeric location IDs.**
+  The existing candidate types only carry hub display names (e.g.
+  `"Jita"`), never a numeric station/location ID — inventing one here
+  would violate the "don't fabricate data" rule. `Opportunity` already
+  made the same choice (`source`/`destination: string | null`), so this
+  is reuse, not a new deviation.
+- **`requiredSkills`/`requiredAssets: string[] | null`, not `string[]`.**
+  No skill/asset constraint model exists yet for trading/hauling
+  (ROADMAP.md Phase 5/6). `null` means "not modeled yet"; an empty
+  array is reserved for a future, actually-verified "no requirements"
+  state. Both fields are always `null` today — not fabricated.
+
+### Representation choices (normalization, not new calculation)
+
+- **`volume: number | null`.** `ScoredCandidate` represents "unknown
+  volume" via a Phase-1-compatibility pattern (`avgDailyVolume: number`
+  stays `0` as a placeholder, with a separate `avgDailyVolumeKnown:
+  boolean` carrying the real answer — see D016). `TradingOpportunity`
+  collapses this pair into one proper nullable field via a small pure
+  helper (`toVolumeOrNull`): known volume passes through unchanged;
+  unknown becomes `null`, never `0`. `trading/scoring.ts` itself is
+  untouched — this normalization exists only in the new mapping layer.
+- **`liquidity: number | null` is always `null` in this step.** No
+  dedicated liquidity signal exists yet (D016, "Liquidity — current
+  state vs. target separation"): `avgDailyVolume` and `competingOrders`
+  already feed both `riskLevel` and `confidence` today. Reusing either
+  of them here as a liquidity stand-in would extend that already-flagged
+  conflation into the new layer instead of resolving it. `liquidity`
+  stays `null` until a real signal (most likely built from
+  `executableQuantity`) exists — deliberately not invented here.
+- **`executableQuantity`** is copied straight from the candidate.
+  `trading/scoring.ts` still does not read this field anywhere (D016) —
+  copying it into `TradingOpportunity` does not change that; it simply
+  stops the value from being available on the candidate but invisible
+  everywhere downstream.
+- **`id: string`** is a deterministic composite key
+  (`` `trading:${action}:${typeId}:${source}[->${destination}]` ``),
+  built by a pure string-concatenation helper — not an ESI entity ID,
+  not random, not time-based. Intended for stable identification (e.g.
+  a future UI list key), not guaranteed globally unique if the analyzer
+  ever produced duplicate candidates for the same (typeId, route) pair
+  (it does not today).
+
+### Scope confirmation
+
+No change to: `src/economics/*` (formulas), `src/trading/scoring.ts`
+(ranking/score/risk logic), `src/trading/analyzer.ts` (candidate
+construction — beyond the purely explanatory comment added in D016),
+`routes/trading.ts`, any ESI/auth/database code, or the UI. Tests added
+in `tests/opportunities/trading.test.ts` cover the new mapping
+functions only; no existing test was modified.

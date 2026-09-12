@@ -1,4 +1,4 @@
-# Architecture — Bremen Inc. Market Tool
+# Architecture — Bremen Inc. Market Tool
 
 ## Target architecture
 
@@ -100,6 +100,40 @@ exploration run
 
 A common opportunity model should make different activities comparable.
 
+#### Current status: `src/opportunities/` (Phase 2, Step 5)
+
+A first concrete slice of this layer exists as of Phase 2 Step 5 —
+see `DECISIONS.md` D017 for the full rationale. Current scope,
+deliberately narrow:
+
+- `src/opportunities/types.ts` defines `TradingOpportunity`, a
+  normalized representation for trading/hauling candidates. It is a
+  concrete, trading-specific stepping stone toward the long-term
+  cross-domain `Opportunity` contract already sketched in
+  `economics/types.ts` — the two are not yet unified (see D017 for the
+  known mismatch, e.g. `domain`/`action` shape).
+- `src/opportunities/trading.ts` provides pure conversion functions
+  (`stationCandidateToOpportunity`, `haulCandidateToOpportunity`) that
+  map an existing `StationTradeCandidate`/`HaulTradeCandidate`
+  (`trading/analyzer.ts`) together with its already-computed
+  `ScoredCandidate` (`trading/scoring.ts`) into a `TradingOpportunity`.
+  These functions perform **no** calculation of their own — every
+  economic value is copied from the Economic Engine's already-computed
+  output. They make no ESI, database, HTTP, or AI calls.
+- **Not done yet, by design:** `routes/trading.ts` does not use this
+  layer yet. `src/trading/scoring.ts` is unchanged and remains the
+  active ranking path for the existing API/UI. This step introduces
+  the abstraction; it does not migrate existing consumers onto it.
+
+**Architectural rule for this layer, going forward:** Opportunity
+objects are normalized domain outputs. They must not independently
+calculate economic truth — economic values must always originate from
+the centralized Economic Engine (`src/economics/`) and simply be
+carried through unchanged. An opportunity mapper may normalize
+*representation* (for example, resolving a Phase-1 paired-boolean
+"unknown" pattern into a proper `null`), but it may never recompute or
+approximate a value the Economic Engine already produced.
+
 ### 6. Decision/Optimization Engine
 
 Future layer.
@@ -133,14 +167,17 @@ It must not become the source of economic truth.
 ## Current repository mapping
 
 ``` text
-src/auth/       EVE SSO / PKCE
-src/db/         SQLite persistence
-src/esi/        ESI data access
-src/routes/     Express API
-src/trading/    Current market/trading logic
-src/ai/         AI advisors
-public/         browser UI
-scripts/        build tooling
+src/auth/          EVE SSO / PKCE
+src/db/            SQLite persistence
+src/esi/           ESI data access
+src/routes/        Express API
+src/trading/       Current market/trading logic + local ranking (scoring.ts)
+src/economics/     Economic Engine (Phase 1) - sole source of economic truth
+src/opportunities/ Opportunity layer (Phase 2 Step 5, trading-only so far,
+                   not yet consumed by routes/UI - see section 5 above)
+src/ai/            AI advisors
+public/            browser UI
+scripts/           build tooling
 ```
 
 ## Existing architecture that should be preserved
